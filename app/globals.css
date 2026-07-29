@@ -1,0 +1,6 @@
+@import "tailwindcss";
+
+/* Keep the demo predictable: one light theme, warm neutrals. */
+:root {
+  color-scheme: light;
+}

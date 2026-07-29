@@ -1,0 +1,33 @@
+// The data model, explained in plain English in architecture.md §3.
+// After changing this file run:  npm run db:reset
+//
+// Deliberately just two tables. Products, orders, and balance all live in the
+// furniture shop's own system (lib/cognitivo.ts) — this app only needs to
+// remember who's logged in. See architecture.md §7 for why that's a change
+// from the local budget/cart simulation this app started with.
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "sqlite"
+  url      = env("DATABASE_URL")
+}
+
+model User {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  sessions     Session[]
+  createdAt    DateTime  @default(now())
+}
+
+model Session {
+  id        String   @id // the opaque random token held in the cookie
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  expiresAt DateTime
+  createdAt DateTime @default(now())
+}

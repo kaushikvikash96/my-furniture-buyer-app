@@ -1,0 +1,24 @@
+# dependencies
+/node_modules
+
+# next.js build output
+/.next
+/out
+next-env.d.ts
+
+# database (recreate with: npm run db:reset)
+*.db
+*.db-journal
+
+# product images, written by: npm run db:import-catalog
+/public/products
+
+# environment
+.env
+.env*.local
+!.env.example
+
+# misc
+.DS_Store
+*.log
+*.tsbuildinfo
