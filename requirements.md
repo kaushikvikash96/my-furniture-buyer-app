@@ -1,6 +1,6 @@
 # Requirements — Furniture Buyer App
 
-**Status:** Draft for Day 1 of hackathon · Last updated 2026-07-29
+**Status:** Day 1 build complete — all Must-haves working · Last updated 2026-07-29
 
 ---
 
@@ -30,6 +30,9 @@ Prioritised so that if the day runs short, we cut from the bottom and still have
 a working demo.
 
 ### Must have — the demo does not exist without these
+
+*All built and verified end-to-end.*
+
 - **M1.** A buyer can log in with email + password, and log out.
 - **M2.** Pages other than login are inaccessible when not logged in.
 - **M3.** A buyer sees a catalogue of furniture products (name, image, price, description).
@@ -37,13 +40,16 @@ a working demo.
 - **M5.** A buyer sees their **total budget**, **spent so far**, and **remaining**, always visible.
 - **M6.** A buyer can place an order. The server rejects it if it exceeds remaining budget.
 - **M7.** A buyer can see a list of their previously placed orders with totals.
-- **M8.** The catalogue is pre-populated with realistic furniture data so the demo looks real.
+- **M8.** The catalogue is pre-populated with realistic furniture data so the demo looks real. *Now the shop's **real** catalogue — 762 products imported from MongoDB, see [architecture.md §7](architecture.md). `prisma/seed.ts` still holds 12 placeholder products as a fallback.*
 
 ### Should have — makes the demo persuasive
+
+*S2 and S4 built; S1, S3, S5 built in their basic form.*
+
 - **S1.** Remaining budget updates live as items are added, and warns *before* submitting when the order would exceed it.
 - **S2.** Products that cost more than the remaining budget are visibly marked as unaffordable.
 - **S3.** An order detail page showing line items, quantities, and the price paid.
-- **S4.** Search / filter the catalogue by name and category.
+- **S4.** Search / filter the catalogue by name and category. *Built — plus pagination, which 762 products made necessary.*
 - **S5.** Looks decent on a phone screen as well as a laptop.
 
 ### Could have — only if time genuinely allows
@@ -143,6 +149,6 @@ These are the rules the code must enforce, gathered in one place:
 
 | # | Question | Working default |
 | --- | --- | --- |
-| Q3 | What **currency**? | USD |
+| Q3 | What **currency**? | Displayed as **USD**, but the imported data is from IKEA Saudi Arabia, so the real figures are most likely **SAR**. The arithmetic is exact either way; only the `$` symbol is in doubt. One-line fix in `lib/money.ts`. **Worth a decision before judging.** |
 | Q4 | Should a buyer be able to **cancel** an order and reclaim budget? | No on Day 1 *(C1)* |
 | Q5 | Do judges expect **self-service signup**, or are seeded demo logins fine? | Seeded logins |
