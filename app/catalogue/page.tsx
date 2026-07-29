@@ -1,18 +1,26 @@
 import Link from "next/link";
 import { ProductCard } from "@/components/ProductCard";
+import { fetchAllProducts, toDisplayProduct, type DisplayProduct } from "@/lib/cognitivo";
 import { getBudgetSummary } from "@/lib/budget";
 import { db } from "@/lib/db";
 import { requireUser } from "@/lib/session";
-import type { Prisma } from "@prisma/client";
 
 const PAGE_SIZE = 24;
 
 /**
  * The home page: the furniture catalogue (requirements M3, M8).
  *
- * The real catalogue has hundreds of products, so this page filters and
- * paginates rather than rendering everything. Search and category are plain
- * links and a GET form, so none of it needs JavaScript.
+ * Fetches LIVE from the shop's catalogue API on every view — see
+ * lib/cognitivo.ts and architecture.md §7. There is no local caching; every
+ * request is a fresh call to GET /catalogue/search-index. The search-index
+ * endpoint has no free-text search or a stable sort order it guarantees
+ * beyond "same result each call" in practice, so search/category/pagination
+ * are all done here, in memory, against the fetched list.
+ *
+ * If the shop's API is unreachable, this page shows a clear error instead of
+ * crashing — that's the real cost of "live": the catalogue now depends on
+ * their server being up, which the earlier one-way-import design deliberately
+ * avoided. See architecture.md §7 for that tradeoff written out in full.
  */
 export default async function CataloguePage({
   searchParams,
@@ -22,31 +30,57 @@ export default async function CataloguePage({
   const user = await requireUser(); // the route guard (M2)
   const { q, category, page } = await searchParams;
 
-  const search = (q ?? "").trim();
+  const search = (q ?? "").trim().toLowerCase();
   const currentPage = Math.max(1, Number(page) || 1);
 
-  const where: Prisma.ProductWhereInput = {
-    ...(search ? { name: { contains: search } } : {}),
-    ...(category ? { category } : {}),
-  };
+  let allProducts: DisplayProduct[];
+  let fetchedAt: Date;
+  let fetchError: string | null = null;
 
-  const [products, matchCount, categories, budget] = await Promise.all([
-    db.product.findMany({
-      where,
-      orderBy: [{ name: "asc" }],
-      skip: (currentPage - 1) * PAGE_SIZE,
-      take: PAGE_SIZE,
-    }),
-    db.product.count({ where }),
-    db.product.groupBy({
-      by: ["category"],
-      _count: { category: true },
-      orderBy: { category: "asc" },
-    }),
-    getBudgetSummary(user.id),
-  ]);
+  try {
+    const items = await fetchAllProducts();
+    fetchedAt = new Date();
 
+    // Live items have no image (search-index never returns one). Photos
+    // saved by an earlier `npm run db:import-catalog` are still on disk and
+    // still keyed by the same sourceId, so merge them in for display —
+    // read-only, nothing is written back here.
+    const localImages = await db.product.findMany({
+      where: { sourceId: { in: items.map((i) => i.item_id) }, NOT: { imageUrl: "" } },
+      select: { sourceId: true, imageUrl: true },
+    });
+    const imageBySourceId = new Map(localImages.map((p) => [p.sourceId, p.imageUrl]));
+
+    allProducts = items.map((item) =>
+      toDisplayProduct(item, imageBySourceId.get(item.item_id) ?? ""),
+    );
+  } catch (error) {
+    fetchError =
+      error instanceof Error ? error.message : "The catalogue service didn't respond.";
+    allProducts = [];
+    fetchedAt = new Date();
+  }
+
+  const categoryCounts = new Map<string, number>();
+  for (const p of allProducts) {
+    categoryCounts.set(p.category, (categoryCounts.get(p.category) ?? 0) + 1);
+  }
+  const categories = [...categoryCounts.keys()].sort();
+
+  const filtered = allProducts.filter(
+    (p) =>
+      (!search || p.name.toLowerCase().includes(search)) &&
+      (!category || p.category === category),
+  );
+
+  const matchCount = filtered.length;
   const totalPages = Math.max(1, Math.ceil(matchCount / PAGE_SIZE));
+  const products = filtered.slice(
+    (currentPage - 1) * PAGE_SIZE,
+    (currentPage - 1) * PAGE_SIZE + PAGE_SIZE,
+  );
+
+  const budget = await getBudgetSummary(user.id);
 
   /** Build a link that keeps the other filters intact. */
   function linkTo(next: { category?: string | null; page?: number }) {
@@ -64,12 +98,27 @@ export default async function CataloguePage({
     <div>
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <h1 className="text-2xl font-semibold tracking-tight">Catalogue</h1>
-        <p className="text-sm text-stone-500">
-          {matchCount.toLocaleString("en-US")}
-          {search || category ? " matching" : ""} product
-          {matchCount === 1 ? "" : "s"}
-        </p>
+        <div className="text-right text-sm text-stone-500">
+          <p>
+            {matchCount.toLocaleString("en-US")}
+            {search || category ? " matching" : ""} product
+            {matchCount === 1 ? "" : "s"}
+          </p>
+          <p className="text-xs text-stone-400" title="Fetched fresh from the shop's catalogue API on this page load — no caching">
+            live · fetched {fetchedAt.toLocaleTimeString("en-US")}
+          </p>
+        </div>
       </div>
+
+      {fetchError && (
+        <p
+          role="alert"
+          className="mt-4 rounded border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+        >
+          The shop&apos;s catalogue service isn&apos;t responding right now
+          ({fetchError}). Try refreshing in a moment.
+        </p>
+      )}
 
       <form method="GET" action="/catalogue" className="mt-4 flex gap-2">
         {category && <input type="hidden" name="category" value={category} />}
@@ -110,31 +159,31 @@ export default async function CataloguePage({
         </Link>
         {categories.map((c) => (
           <Link
-            key={c.category}
-            href={linkTo({ category: c.category, page: 1 })}
+            key={c}
+            href={linkTo({ category: c, page: 1 })}
             className={`rounded-full px-3 py-1 text-xs ${
-              category === c.category
+              category === c
                 ? "bg-stone-900 text-white"
                 : "bg-white text-stone-600 ring-1 ring-stone-300 hover:bg-stone-100"
             }`}
           >
-            {c.category}{" "}
-            <span className="text-stone-400">{c._count.category}</span>
+            {c} <span className="text-stone-400">{categoryCounts.get(c)}</span>
           </Link>
         ))}
       </div>
 
       {products.length === 0 ? (
         <p className="mt-8 rounded-lg border border-stone-200 bg-white p-6 text-stone-600">
-          No products match. Try clearing the filters, or run{" "}
-          <code>npm run db:import-catalog</code> if the catalogue is empty.
+          {fetchError
+            ? "Couldn't load the catalogue — see the message above."
+            : "No products match. Try clearing the filters."}
         </p>
       ) : (
         <>
           <div className="mt-6 grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
             {products.map((product) => (
               <ProductCard
-                key={product.id}
+                key={product.sourceId}
                 product={product}
                 remainingCents={budget.remainingCents}
               />

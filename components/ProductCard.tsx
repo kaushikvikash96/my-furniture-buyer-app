@@ -1,18 +1,23 @@
-import type { Product } from "@prisma/client";
+import type { DisplayProduct } from "@/lib/cognitivo";
 import { addToOrder } from "@/app/actions/orders";
 import { Money } from "./Money";
 
 /**
- * One product in the catalogue grid.
+ * One product in the catalogue grid, fetched live from the shop's API
+ * (app/catalogue/page.tsx) — `product.sourceId` is the shop's own item id,
+ * not a row in our database. See app/actions/orders.ts for how "Add to
+ * order" turns that into a local Product the first time it's used.
  *
- * The image sits on a gradient tile, so if a placeholder photo fails to load
- * you get a tasteful coloured card rather than a broken-image icon.
+ * Most of these have no photo — the live endpoint doesn't return one — so
+ * the image is only rendered when we actually have one (merged in from an
+ * earlier `npm run db:import-catalog`, if any). Otherwise it's just the
+ * gradient tile, not a broken-image icon.
  */
 export function ProductCard({
   product,
   remainingCents,
 }: {
-  product: Product;
+  product: DisplayProduct;
   remainingCents: number;
 }) {
   const affordable = product.priceCents <= remainingCents;
@@ -20,13 +25,15 @@ export function ProductCard({
   return (
     <article className="flex flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm">
       <div className="relative aspect-4/3 bg-linear-to-br from-stone-200 to-stone-300">
-        {/* eslint-disable-next-line @next/next/no-img-element */}
-        <img
-          src={product.imageUrl}
-          alt={product.name}
-          loading="lazy"
-          className="absolute inset-0 h-full w-full object-cover"
-        />
+        {product.imageUrl && (
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={product.imageUrl}
+            alt={product.name}
+            loading="lazy"
+            className="absolute inset-0 h-full w-full object-cover"
+          />
+        )}
       </div>
 
       <div className="flex flex-1 flex-col p-4">
@@ -56,7 +63,7 @@ export function ProductCard({
 
           {affordable ? (
             <form action={addToOrder}>
-              <input type="hidden" name="productId" value={product.id} />
+              <input type="hidden" name="sourceId" value={product.sourceId} />
               <button
                 type="submit"
                 className="rounded bg-stone-900 px-3 py-2 text-sm font-medium text-white hover:bg-stone-700"

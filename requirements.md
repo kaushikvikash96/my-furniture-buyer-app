@@ -40,7 +40,7 @@ a working demo.
 - **M5.** A buyer sees their **total budget**, **spent so far**, and **remaining**, always visible.
 - **M6.** A buyer can place an order. The server rejects it if it exceeds remaining budget.
 - **M7.** A buyer can see a list of their previously placed orders with totals.
-- **M8.** The catalogue is pre-populated with realistic furniture data so the demo looks real. *Now the shop's **real** catalogue — 762 products imported from MongoDB, see [architecture.md §7](architecture.md). `prisma/seed.ts` still holds 12 placeholder products as a fallback.*
+- **M8.** The catalogue is pre-populated with realistic furniture data so the demo looks real. *Now the shop's **real, live** catalogue — the catalogue page fetches `GET /catalogue/search-index` fresh on every view (762 products), rather than a one-time import. See [architecture.md §7](architecture.md) for what changed and the tradeoff that came with it. `prisma/seed.ts` still holds 12 placeholder products as a fallback, and `npm run db:import-catalog` remains as an offline snapshot.*
 
 ### Should have — makes the demo persuasive
 
@@ -131,7 +131,7 @@ These are the rules the code must enforce, gathered in one place:
 ## 6. Non-functional requirements
 
 - **Demo-ready:** runs with two commands on a laptop, no cloud accounts required.
-- **Fast enough:** any page in under ~1 second locally. No performance work beyond that.
+- **Fast enough:** any page in under ~1 second locally. No performance work beyond that. *Exception: the catalogue page, which now depends on the shop's live API (architecture.md §7) — its speed is theirs to control, measured anywhere from 0.6s to 3.0s at different times. Every other page is unaffected and still meets the ~1s bar.*
 - **Honest security basics:** passwords hashed (never stored in plain text), session cookie is HttpOnly, no secrets committed to git. We are *not* claiming production-grade security.
 - **Resettable:** one command reseeds the database to a clean demo state — essential when practising the demo.
 - **Understandable:** the person who owns this app has no coding background, so file names and structure must be self-explanatory.

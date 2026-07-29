@@ -25,10 +25,11 @@ The owner of this project **has no coding background**. That shapes how to work:
 TypeScript · Next.js (App Router) · SQLite via Prisma · own cookie session
 (bcryptjs + `Session` table) · Tailwind CSS.
 
-**Six runtime dependencies**, and it stays that way: `next`/`react`/`react-dom`,
-`typescript`, `prisma`+`@prisma/client`, `tailwindcss`, `bcryptjs` — plus
-`mongodb` as a dev dependency used *only* by the catalogue import script. Session
-tokens use Node's built-in `crypto`; forms are plain HTML forms + Server Actions.
+**Six dependencies total**, and it stays that way: `next`/`react`/`react-dom`,
+`typescript`, `prisma`+`@prisma/client`, `tailwindcss`, `bcryptjs`. Session tokens
+use Node's built-in `crypto`; forms are plain HTML forms + Server Actions; the
+catalogue import script (below) talks to the shop's API with the built-in
+`fetch` — no HTTP client library.
 
 **Version pins that matter:** Prisma **6** (v7 needs a config file, `dotenv` and a
 native `better-sqlite3` adapter for SQLite) and TypeScript **6** (Next.js 16
@@ -59,6 +60,8 @@ ADR-2 — read it before proposing a change back.
 - **Every query is scoped to the current user.** No route may read or write another user's orders.
 - **Prefer Server Components and Server Actions** over writing API route handlers. Reach for a route handler only when something genuinely needs an HTTP endpoint.
 - Business rules live in `lib/`, not inside page components.
+- **The catalogue page fetches live from the shop's API on every view** (`lib/cognitivo.ts`, `cache: "no-store"`) — it does not query `db.product`. Don't "optimize" this back into a database read without re-reading [architecture.md §7](architecture.md) first; that reversal was deliberate and asked for.
+- **`addToOrder` lazily creates a local `Product` row the first time an item is ordered** (via `GET /catalogue/{item_id}`), reusing `buildName`/`buildDescription`/`toCents` from `lib/cognitivo.ts`. Any other code that needs those transforms should import them from there, not redefine them.
 
 ## Layout
 
@@ -78,7 +81,7 @@ once placed.
 npm run dev                 # start the app at http://localhost:3000
 npm run db:push             # apply schema changes (non-destructive)
 npm run db:seed             # demo buyers + 12 placeholder products
-npm run db:import-catalog   # load the real 762-product catalogue from MongoDB
+npm run db:import-catalog   # optional: snapshot the catalogue locally (fallback, not required)
 npm run db:studio           # spreadsheet-like view of the data (useful for the owner)
 npm run build               # production build — also type-checks
 npm run db:reset            # DESTRUCTIVE: wipes the database, then reseeds
@@ -110,15 +113,23 @@ login/logout, route guard, catalogue with search + category filter + pagination,
 draft order with quantities, budget bar, transactional over-budget rejection,
 order history and detail.
 
-The real catalogue is loaded: **762 products** imported from the shop's MongoDB,
-with images decoded to `public/products/`. See
-[architecture.md §7](architecture.md).
+**The catalogue is live (2026-07-29 revision).** Originally a one-way import
+into SQLite (still true when this file was last fully rewritten); the owner
+then explicitly asked for real, live API calls instead, so the catalogue page
+now fetches `GET /catalogue/search-index` fresh on every view — no caching —
+and "Add to order" lazily creates a local `Product` row via
+`GET /catalogue/{item_id}` the first time each item is ordered. Product photos
+saved by an earlier `npm run db:import-catalog` are merged in read-only for
+display. Full detail, including the honest tradeoff (a live demo now depends
+on the shop's server), in [architecture.md §7](architecture.md).
 
-Verified by replaying real Server Action POSTs against a running server: wrong
-password sets no cookie; over-budget order rejected with 0 rows written;
-double-submit creates exactly one order; one buyer gets 404 on another's order.
+Verified: wrong password sets no cookie; over-budget order rejected with 0
+rows written; double-submit creates exactly one order; one buyer gets 404 on
+another's order; a deliberately-deleted local product re-syncs correctly on
+next "Add to order"; the catalogue page returns a friendly error (not a crash)
+when the shop's API is unreachable.
 
-**Open, and worth raising:** prices came from IKEA Saudi Arabia so they are
-probably SAR while the UI shows `$` — a one-line change in `lib/money.ts`
-(requirements.md Q3). Other open questions (order cancellation, self-service
-signup) don't block anything.
+**Open, and worth raising:**
+- Prices came from IKEA Saudi Arabia so they are probably SAR while the UI shows `$` — a one-line change in `lib/money.ts` (requirements.md Q3).
+- The shop's own `/catalogue/search-index` latency varies noticeably by the hour — measured 0.6s once, 3.0s later, for the same request, confirmed via direct `curl` (not our code). Worth knowing before judging, since it sets how snappy the catalogue page feels.
+- Other open questions (order cancellation, self-service signup) don't block anything.

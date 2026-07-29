@@ -10,8 +10,9 @@ Built for Day 1 of a hackathon.
 
 ## Status
 
-✅ **Working.** Login, catalogue, ordering and budget enforcement all run, loaded
-with the shop's real catalogue of **762 products**.
+✅ **Working.** Login, catalogue, ordering and budget enforcement all run. The
+catalogue page calls the shop's own API **live, on every view** — 762 real
+products, fetched fresh each time, not a stored copy.
 
 ## Running it
 
@@ -45,23 +46,40 @@ Opens a spreadsheet-like view of the database in your browser — buyers, produc
 orders — where you can read and edit rows directly. Useful for checking that
 something saved, or for changing a buyer's budget.
 
+### About the live catalogue
+
+The home page doesn't read products from the local database — it calls the
+shop's `GET /catalogue/search-index` API fresh every time you view it (using
+`COGNITIVO_API_KEY` from `.env`). Look for the small "live · fetched HH:MM:SS"
+label at the top of the catalogue page: it changes every reload, proving it's
+not a cached copy. You won't see the call in your browser's DevTools, though —
+it happens on the server, which is required to keep the API key private. Watch
+the terminal running `npm run dev` instead; each fetch logs a line there.
+
+One real consequence: **this page's speed is the shop's server's speed, not
+ours** — it's been anywhere from under a second to a few seconds, at different
+times, for the exact same request. Every other page (login, orders, budget)
+stays fast regardless, since only the catalogue depends on it.
+
 ### Rebuilding the data
 
-The database is one file (`prisma/dev.db`), created from these commands:
+The database (`prisma/dev.db`) still needs demo users:
 
 ```bash
 npm run db:seed             # demo buyers + 12 placeholder products
-npm run db:import-catalog   # replace those with the real 762-product catalogue
 ```
 
-`db:import-catalog` reads the shop's MongoDB using `CATALOG_MONGODB_URI` from
-`.env`, and saves the product images into `public/products/`. Re-running it
-updates products in place, so existing orders keep working.
+`npm run db:import-catalog` is now optional — it snapshots the shop's catalogue
+into the local database for offline browsing in Prisma Studio, but the app
+itself doesn't need it to show real products anymore. It's also what
+"Add to order" leans on: the very first time any product is ordered, that one
+item gets saved locally automatically, so you don't have to run this command
+just to place an order.
 
 ## Features
 
 - 🔐 Email + password login; every other page redirects to it when logged out
-- 🛋️ Browse 762 products with search, category filter and pagination
+- 🛋️ Browse 762 products **live from the shop's own catalogue API**, with search, category filter and pagination
 - 🧾 Build up an order, adjust quantities, place it
 - 💰 Total / spent / remaining budget visible at all times
 - 🚫 Orders over the remaining budget are **rejected by the server**, inside one database transaction, so a double-clicked button can't sneak past
@@ -86,9 +104,8 @@ Deliberately small — **six runtime dependencies**:
 - **[Tailwind CSS](https://tailwindcss.com)** — styling
 
 No state-management library, no form library, no component kit, no separate API
-layer, no Docker. (`mongodb` is a dev-only dependency, used once by the catalogue
-import.) Every choice and the rejected alternatives are explained in plain English
-in [architecture.md §2](architecture.md).
+layer, no Docker. Every choice and the rejected alternatives are explained in
+plain English in [architecture.md §2](architecture.md).
 
 ## Known issues
 

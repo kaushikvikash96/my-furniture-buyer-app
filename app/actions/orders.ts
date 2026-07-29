@@ -4,6 +4,7 @@ import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { db } from "@/lib/db";
 import { getBudgetSummary } from "@/lib/budget";
+import { fetchProductById, toDisplayProduct } from "@/lib/cognitivo";
 import { formatCents } from "@/lib/money";
 import { requireUser } from "@/lib/session";
 
@@ -24,21 +25,41 @@ function refreshPages() {
   revalidatePath("/orders");
 }
 
+/**
+ * The catalogue page now shows live items from the shop's API, identified by
+ * their own `sourceId` — not a row in our database yet. The first time a
+ * given item is added, we sync it into our local Product table (so the
+ * order/budget logic downstream — which needs a real foreign key — never has
+ * to change); every later add just reuses that row. See architecture.md §7.
+ */
 export async function addToOrder(formData: FormData): Promise<void> {
   const user = await requireUser();
-  const productId = String(formData.get("productId") ?? "");
+  const sourceId = String(formData.get("sourceId") ?? "");
+  if (!sourceId) return;
 
-  const product = await db.product.findUnique({ where: { id: productId } });
-  if (!product) return;
+  let product = await db.product.findFirst({ where: { sourceId } });
+
+  if (!product) {
+    let item;
+    try {
+      item = await fetchProductById(sourceId);
+    } catch {
+      return; // shop's API unreachable right now — nothing safe to add
+    }
+    if (!item) return; // no longer in the shop's catalogue
+
+    const { sourceId: _ignore, ...fields } = toDisplayProduct(item);
+    product = await db.product.create({ data: { ...fields, sourceId } });
+  }
 
   const draft = await getOrCreateDraft(user.id);
 
   await db.orderItem.upsert({
-    where: { orderId_productId: { orderId: draft.id, productId } },
+    where: { orderId_productId: { orderId: draft.id, productId: product.id } },
     // unitPriceCents is copied NOW, so re-pricing later can't rewrite history.
     create: {
       orderId: draft.id,
-      productId,
+      productId: product.id,
       quantity: 1,
       unitPriceCents: product.priceCents,
     },

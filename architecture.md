@@ -22,6 +22,8 @@ flowchart TD
     SC --> P["Prisma<br/>(typed database client)"]
     SA --> P
     P --> DB[("SQLite file<br/>prisma/dev.db")]
+    SC -->|"live, every view<br/>(§7)"| API[("Shop's catalogue API")]
+    SA -->|"first add of an item<br/>(§7)"| API
 ```
 
 **Why one process matters for us:** the usual web-app setup is two programs (a
@@ -29,16 +31,32 @@ frontend and a backend API) that have to be started together, kept in sync, and
 debugged separately. Next.js collapses that into one, so there is a single thing
 to run and a single place a bug can be.
 
+One thing this diagram makes visible that's worth naming: **the catalogue page
+is the one place this app depends on a service outside our own database.**
+Every other page — login, current order, order history — only ever talks to
+SQLite. §7 covers what that dependency costs and how the page degrades if the
+shop's API is briefly unreachable.
+
 ### How a page load actually works
 
 1. Browser asks for `/catalogue`.
 2. The page (a **Server Component**) runs *on the server*. Its first line is `requireUser()`, which reads the session cookie and looks it up: no valid session → redirect to `/login`, done.
-3. Still on the server, the page queries the database through Prisma directly — no API call needed — and renders finished HTML.
+3. Still on the server, the page fetches the product list **live** from the shop's catalogue API (§7) — a real network call, on every view, no caching — merges in any product photos already saved locally, and renders finished HTML.
 4. Browser receives HTML that is already filled in with products and budget figures.
-5. Clicking "Add to order" calls a **Server Action** — a normal-looking function that actually executes on the server, writes to the database, and refreshes the affected parts of the page.
+5. Clicking "Add to order" calls a **Server Action** — a normal-looking function that actually executes on the server. The first time a given item is added, the action also calls the shop's API once to sync that one product into our database (§7); every later click just reuses that row. The action then writes to the database and refreshes the affected parts of the page.
 
 The practical upshot: for most features there is *no API endpoint to write*. That
 is where most of the day's time saving comes from.
+
+**A note on where these calls actually happen:** both of the calls above run
+*on the server* — inside a Server Component or a Server Action — never in the
+browser. That's deliberate: it's the only way to send the API key without
+exposing it to every visitor (§2, "server-side only"). One consequence worth
+knowing: **you will never see a request to the shop's API in your browser's
+Network tab**, no matter how "live" this gets — only client-side JavaScript
+fetches show up there. The catalogue page's small "live · fetched HH:MM:SS"
+label exists specifically to make the liveness visible without needing
+DevTools; the terminal running `npm run dev` shows the actual outbound calls.
 
 ## 2. Technology choices, and what was rejected
 
@@ -52,12 +70,11 @@ is where most of the day's time saving comes from.
 | Styling | **Tailwind CSS** | Ships with Next.js's setup command, styling lives next to the markup so there's no hunting between files. Fast to iterate, which is what Day 1 rewards. |
 | Money | **Integer cents** | See ADR-3. |
 | Budget rule | **Swappable policy module** | See ADR-4. |
-| Catalogue source | **One-way import from MongoDB** | See §7. The running app only ever reads SQLite. |
+| Catalogue source | **One-way import from the shop's catalogue API** | See §7. The running app only ever reads SQLite. |
 
 ### How simple is this, really?
 
-The app the browser talks to is **six dependencies**, plus one used only by the
-catalogue import script:
+The whole app is **six dependencies**:
 
 | Package | What it's for |
 | --- | --- |
@@ -66,7 +83,6 @@ catalogue import script:
 | `prisma` + `@prisma/client` | the database, and Prisma Studio for viewing it |
 | `tailwindcss` | styling |
 | `bcryptjs` | password hashing |
-| `mongodb` *(dev only)* | reads the shop's catalogue once, during import (§7) |
 
 Pinned versions worth knowing: **Prisma 6, not 7.** Prisma 7 requires a config
 file, a `dotenv` dependency and a native `better-sqlite3` driver adapter to talk
@@ -76,7 +92,9 @@ TypeScript 7 doesn't expose yet.
 
 Everything else uses what's already built in: session tokens come from **Node's
 own `crypto`** module, forms are **plain HTML forms** handled by Server Actions,
-and there's no client-side data-fetching because pages read the database directly.
+there's no client-side data-fetching because pages read the database directly,
+and the catalogue import script (§7) talks to the shop's API with the same
+built-in `fetch` the browser has — no HTTP client library needed either.
 
 `bcryptjs` rather than `bcrypt` on purpose: `bcrypt` needs a C++ compilation step
 that frequently fails on Windows/WSL, and `bcryptjs` is pure JavaScript that just
@@ -450,7 +468,7 @@ my-furniture-buyer-app/
 ├── prisma/
 │   ├── schema.prisma           # the data model above
 │   ├── seed.ts                 # demo buyers + placeholder catalogue
-│   ├── import-catalog.ts       # loads the real catalogue from MongoDB (§7)
+│   ├── import-catalog.ts       # loads the real catalogue from the shop's API (§7)
 │   └── dev.db                  # the database itself (git-ignored)
 ├── public/products/            # product images, written by the import (git-ignored)
 ├── .env                        # DATABASE_URL + CATALOG_MONGODB_URI (git-ignored)
@@ -492,45 +510,78 @@ and stores product images as **URLs rather than uploaded files** — file upload
 are the other thing that breaks on disk-less hosting. So the escape hatch stays
 open at roughly ten minutes' cost, without us paying anything for it today.
 
-## 7. The catalogue import
+## 7. The catalogue: live, not imported *(reversal)*
 
-The real product catalogue lives in the shop's MongoDB. `npm run db:import-catalog`
-copies it into our SQLite database **once**; the running app never talks to
-MongoDB. That keeps the app a single-database, single-process thing (§1) and means
-a flaky network on demo day can't take the catalogue down.
+The real product catalogue lives in the furniture shop's own catalogue API
+(`day1.training.cognitivo.com.au`, documented in the Day 1 Participant Guide).
+
+**This was originally a one-way import** — a script copied the catalogue into
+SQLite once, and the running app never called the API. That design traded
+liveness for demo-safety: a flaky network on demo day couldn't take the
+catalogue down. The owner explicitly asked to change that trade — to see the
+app genuinely call the shop's API rather than read a snapshot — so the
+catalogue page now fetches live, **on every view, with no caching**:
 
 ```
-MongoDB `catalog` collection  ──(npm run db:import-catalog)──▶  SQLite Product table
-     762 documents                                                 + public/products/*.jpg
+Browser → GET /catalogue → Server Component → GET /catalogue/search-index → 762 products, rendered
+                                              ↘ (merge) local Product.imageUrl, by sourceId — read-only
 ```
 
-The connection string comes from `CATALOG_MONGODB_URI` in `.env`, which is
-git-ignored. `.env.example` shows the shape with the credential removed.
+`prisma/import-catalog.ts` (`npm run db:import-catalog`) still exists, but it's
+now optional — a fallback snapshot for offline browsing in Prisma Studio, not
+what powers the home page. See "What changed" below for exactly what still
+depends on it.
 
-### What the import has to fix along the way
+### Why `/catalogue/search-index`, not `/catalogue`
 
-The source data doesn't match our model, so the script translates. Each of these
-is a decision worth knowing about:
+The API exposes the same 762 products two ways:
 
-| Source | Problem | What the import does |
+| Endpoint | What it returns | Measured |
 | --- | --- | --- |
-| `price: 51.6` | A decimal number of dollars, but we store integer cents (ADR-3) | `Math.round(price * 100)` → `5160`. Rounding matters: `51.6 * 100` is `5159.999…` in floating point — exactly the drift ADR-3 exists to prevent |
-| `image_url` | Misleadingly named: it's ~73KB of **base64 image data**, not a URL (66MB across the catalogue) | Decodes each one to `public/products/<item_id>.jpg` and stores the short path. Keeping 66MB of base64 in the database would bloat every query and every page |
-| no description field | `Product.description` is required | Builds one from colours and dimensions: `"Black · W80 × H105 cm"` |
-| `product_name: "Bar stool"` | Generic — dozens of products share a name, so the grid would read as duplicates | Takes the series name from the product link (`/p/nordviken-bar-table-…`) to make `"Nordviken Bar table"` |
-| no stable key | A re-import would have to delete and recreate rows, breaking the orders that point at them | Stores the shop's own `item_id` as `sourceId` and updates matching rows in place |
+| `GET /catalogue` | Full records **with embedded images** | 500 products: **7.0s**, 57MB |
+| `GET /catalogue/search-index` | The same fields, **no images** | 500 products: **0.6–3.1s**, 153KB |
 
-### Re-running it is safe
+That's still at minimum a 2× time difference and always a 375× size difference
+— but the search-index timing is a range, not a fixed number, because it isn't
+fixed: measured **0.6s** for 500 products earlier, then **3.0s** for all 762
+later in the same session, on the shop's server, with no change on our end
+(confirmed — a direct `curl` to the API showed the identical latency, so it
+isn't something our code is adding). Whatever's driving that swing is outside
+our control. `lib/cognitivo.ts` pages through with `skip`/`limit` (capped at
+1000 per call by the API) rather than trusting a single request, so a
+catalogue that grows past 1000 products in future can't silently get truncated.
 
-The script updates existing products rather than replacing them, so order history
-keeps pointing at real products. It also **refuses to delete a product that a
-placed order references** — history doesn't get deleted to tidy up a table. Draft
-order lines are fair game, because a draft is work in progress.
+The base URL and key come from `COGNITIVO_API_BASE_URL` and `COGNITIVO_API_KEY`
+in `.env`, which is git-ignored. `.env.example` shows the shape with the
+credential removed. Sent as an `X-Api-Key` header, per the endpoint's own docs.
+Every call uses `cache: "no-store"` — Next.js's fetch cache is explicitly
+turned off here, on purpose, so "live" means what it says.
 
-### Two things to know
+### What changed, concretely
+
+- **The catalogue page** (`app/catalogue/page.tsx`) fetches the full 762-item list on every request, then does search / category filter / pagination **in memory** — the API has no free-text search of its own, only a `category` param, so this is what keeps the search box working at all.
+- **Product photos still show up.** The live endpoint never returns one, so the page separately reads `Product.imageUrl` from SQLite for any `sourceId` it already knows about (one indexed, read-only query) and merges it in for display. Nothing is written back by this — it's purely cosmetic enrichment of photos saved by an earlier import.
+- **"Add to order" lazily creates the local row it needs.** `OrderItem` has a database foreign key to `Product`, and a live API item isn't a database row — so the first time a given item is ever added, `addToOrder` (`app/actions/orders.ts`) calls `GET /catalogue/{item_id}` once, builds a `Product` row from the result (same `buildName`/`buildDescription`/`toCents` helpers the import script uses — factored into `lib/cognitivo.ts` so both paths stay consistent), and only then adds it to the draft. Every later click on that same item reuses the row. **Nothing about placing an order changed** — the transactional budget check (§4) still runs against local data exactly as before.
+- **If the shop's API doesn't respond, the page doesn't crash.** `CataloguePage` catches the fetch failure and renders a plain error banner instead of an unhandled exception; the rest of the layout (nav, budget bar) still works. Verified by pointing the app at a nonexistent host and confirming a `200` with a friendly message, not a `500`.
+- **You will not see this in your browser's Network tab.** Both calls above run on the server (a Server Component, a Server Action) — that's required to keep the API key off the client (§2). The catalogue page's "live · fetched HH:MM:SS" label and the `[cognitivo] GET ...` line each call logs to the terminal running `npm run dev` are the two ways to actually see this happening.
+
+### The honest tradeoff
+
+This reverses the exact benefit the one-way import was built for. Read literally:
+**the catalogue page now depends on a third party's server being reachable and
+reasonably fast, live, during your demo.** If their API is down, slow, or
+rate-limits you at the wrong moment, that's what a judge sees. The one-way
+import remains in the repo specifically as the fallback for that scenario —
+`npm run db:import-catalog` still populates SQLite fully, so reverting to the
+old, network-independent behavior on the catalogue page (a small change: go
+back to querying `db.product` instead of `fetchAllProducts()`) stays cheap if
+this ever becomes the wrong call closer to judging.
+
+### Other things to know
 
 - **Prices are almost certainly not US dollars.** The source links point at IKEA Saudi Arabia, so the figures are most likely SAR, while the app formats them as `$`. Nothing is *wrong* in the arithmetic — every total and budget check is exact — but the currency symbol is cosmetic and probably mislabelled. It's a one-line fix in `lib/money.ts` (`CURRENCY = "SAR"`), and it's open question Q3 in [requirements.md §7](requirements.md).
-- **`public/products/` is git-ignored** and recreated by the import. That's fine locally, but it's the second thing (after SQLite) that would break on disk-less hosting — see §6.
+- **`public/products/` is git-ignored.** Nothing writes to it anymore (the API never returns images), but it's still read for the photo-merge above. That's fine locally, but it's the second thing (after SQLite) that would break on disk-less hosting — see §6.
+- **The catalogue API also has an `/orders` endpoint** whose shape (`user_id`, `items[]`, `remaining_balance`) closely mirrors this app's own order model. It isn't called anywhere in this app — only the catalogue is live. Worth a conscious decision later about whether order placement should also go through that API instead of (or alongside) our local database.
 
 ## 8. Known risks
 
@@ -541,3 +592,4 @@ order lines are fair game, because a draft is work in progress.
 | Budget logic has an off-by-one or a double-spend on stage | Integer cents (ADR-3) + single transaction (§4). Practise the double-click. |
 | Scope creep into admin screens, payments, stock | Explicit "Won't have" list in [requirements.md §3](requirements.md). Set budgets and products by seeding. |
 | Database in a weird state mid-demo | `npm run db:reset` restores a clean seeded state in seconds. |
+| Shop's catalogue API is slow/down during judging | Catalogue page shows a clear error, not a crash (§7). Reverting the catalogue page to read local SQLite instead of fetching live is a small, known change if needed before demo time — the import script that enables it still works. |
