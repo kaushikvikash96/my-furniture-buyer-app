@@ -1,5 +1,10 @@
 // The data model, explained in plain English in architecture.md §3.
 // After changing this file run:  npm run db:reset
+//
+// Deliberately just two tables. Products, orders, and balance all live in the
+// furniture shop's own system (lib/cognitivo.ts) — this app only needs to
+// remember who's logged in. See architecture.md §7 for why that's a change
+// from the local budget/cart simulation this app started with.
 
 generator client {
   provider = "prisma-client-js"
@@ -15,8 +20,6 @@ model User {
   email        String    @unique
   name         String
   passwordHash String
-  budgetCents  Int // total allocation, set at seed time
-  orders       Order[]
   sessions     Session[]
   createdAt    DateTime  @default(now())
 }
@@ -27,50 +30,4 @@ model Session {
   user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   expiresAt DateTime
   createdAt DateTime @default(now())
-}
-
-model Product {
-  id          String      @id @default(cuid())
-  name        String
-  description String
-  category    String // "Bar furniture", "Beds", "Bookcases & shelving units", ...
-  priceCents  Int
-  imageUrl    String // a path or URL, never an image blob
-  orderItems  OrderItem[]
-
-  // Where this product came from, when imported from the shop's catalogue.
-  // sourceId lets a re-import update rows in place instead of deleting them,
-  // which would break the order history that points at them. Indexed rather
-  // than @unique so it can be added to an existing SQLite table without
-  // rebuilding it; the import script is the single writer and looks it up.
-  sourceId    String?
-  sourceUrl   String?
-
-  @@index([category])
-  @@index([sourceId])
-}
-
-model Order {
-  id         String      @id @default(cuid())
-  userId     String
-  user       User        @relation(fields: [userId], references: [id], onDelete: Cascade)
-  status     String      @default("DRAFT") // "DRAFT" = the cart | "PLACED"
-  totalCents Int         @default(0) // frozen at the moment it is placed
-  placedAt   DateTime?
-  createdAt  DateTime    @default(now())
-  items      OrderItem[]
-
-  @@index([userId, status])
-}
-
-model OrderItem {
-  id             String  @id @default(cuid())
-  orderId        String
-  order          Order   @relation(fields: [orderId], references: [id], onDelete: Cascade)
-  productId      String
-  product        Product @relation(fields: [productId], references: [id])
-  quantity       Int
-  unitPriceCents Int // copied at add time — history must not change
-
-  @@unique([orderId, productId]) // one line per product; re-adding bumps quantity
 }

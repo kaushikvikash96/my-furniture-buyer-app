@@ -1,13 +1,7 @@
 import Link from "next/link";
 import { logOut } from "@/app/actions/auth";
 
-export function Navbar({
-  userName,
-  draftItemCount,
-}: {
-  userName: string;
-  draftItemCount: number;
-}) {
+export function Navbar({ userName }: { userName: string }) {
   return (
     <header className="border-b border-stone-200 bg-stone-900 text-stone-100">
       <nav className="mx-auto flex max-w-6xl flex-wrap items-center gap-x-6 gap-y-2 px-4 py-3">
@@ -18,14 +12,6 @@ export function Navbar({
         <div className="flex items-center gap-x-5 text-sm">
           <Link href="/catalogue" className="hover:text-white">
             Catalogue
-          </Link>
-          <Link href="/order" className="hover:text-white">
-            Current order
-            {draftItemCount > 0 && (
-              <span className="ml-1.5 rounded-full bg-amber-500 px-2 py-0.5 text-xs font-semibold text-stone-900">
-                {draftItemCount}
-              </span>
-            )}
           </Link>
           <Link href="/orders" className="hover:text-white">
             Past orders

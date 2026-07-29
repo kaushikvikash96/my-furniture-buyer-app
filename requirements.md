@@ -1,154 +1,127 @@
 # Requirements — Furniture Buyer App
 
-**Status:** Day 1 build complete — all Must-haves working · Last updated 2026-07-29
+**Status:** Real integration built and verified · Last updated 2026-07-29
 
 ---
 
 ## 1. What we're building
 
-A web app for a furniture shop's **buyers** (the people who purchase stock for
-the shop). A buyer logs in, browses the product catalogue, adds furniture to an
-order, and places that order — with the app enforcing that they never spend more
-than their allocated budget.
+A web app for a furniture shop's **buyers**. A buyer logs in, browses the
+shop's real product catalogue, and clicks Buy to place a **real order**
+through the shop's own system — spending their **real** balance, checked by
+the shop itself, not a number we invented.
 
-The one-sentence pitch: *"A buyer's storefront that can't let you overspend."*
+The one-sentence pitch changed with this revision: it used to be *"a buyer's
+storefront that can't let you overspend against a made-up budget."* It's now
+*"a buyer's storefront wired directly to the real thing."*
 
 ## 2. Who uses it
 
 | Persona | What they need |
 | --- | --- |
-| **Buyer** (primary) | Log in, see what they can afford, browse, order, track remaining budget |
-| **Demo viewer** (hackathon judge) | Understand the whole flow in under 2 minutes without being taught |
+| **Buyer** (primary) | Log in, see their real balance, browse, buy, see confirmation |
+| **Demo viewer** | Understand the whole flow in under 2 minutes without being taught |
 
-Only the Buyer role exists in Day 1. There is no admin/manager role — the
-catalogue and budgets are set up by seeding the database (see
-[architecture.md](architecture.md)).
+Two demo logins exist (Sam, Alex) purely so there's something to log in *as*.
+Both act on the **same one real account** — see §3, business rule 1. There is
+no admin/manager role.
 
-## 3. Day 1 scope
+## 3. Business rules
 
-Prioritised so that if the day runs short, we cut from the bottom and still have
-a working demo.
+1. **Every logged-in buyer acts as the same one real shop account** (`COGNITIVO_USER_ID` in `.env`). This app's API key only resolves to one real user; it isn't a limitation discovered late, it's a deliberate choice the owner made explicitly when asked. See [architecture.md §7](architecture.md).
+2. **Balance is never stored or computed locally.** It's read fresh from the shop's API every time it's shown. This app has no `budgetCents` field anywhere anymore.
+3. **An order is never stored or simulated locally.** Clicking Buy sends one real request to the shop's own order-placing endpoint. There is no local draft, no local cart, no local rejection logic — the shop's system is the only thing that decides whether an order succeeds.
+4. **Money is stored in whole minor units** (cents) the moment it's read from the shop's API, never as a decimal. Displayed as currency only at the last moment.
+5. **Every distinguishable failure gets its own message.** "Not enough balance" and "item no longer exists" read differently to a buyer, so they're detected and shown differently — see requirement 3 below.
+6. **Nothing the shop's API does is ever allowed to crash the page.** Every call to it is wrapped so a failure becomes a clear, on-screen message.
 
-### Must have — the demo does not exist without these
+## 4. Requirements (as given) and how each is met
 
-*All built and verified end-to-end.*
+### Requirement 1 — show the real balance
 
-- **M1.** A buyer can log in with email + password, and log out.
-- **M2.** Pages other than login are inaccessible when not logged in.
-- **M3.** A buyer sees a catalogue of furniture products (name, image, price, description).
-- **M4.** A buyer can add products to a current order and set quantities.
-- **M5.** A buyer sees their **total budget**, **spent so far**, and **remaining**, always visible.
-- **M6.** A buyer can place an order. The server rejects it if it exceeds remaining budget.
-- **M7.** A buyer can see a list of their previously placed orders with totals.
-- **M8.** The catalogue is pre-populated with realistic furniture data so the demo looks real. *Now the shop's **real, live** catalogue — the catalogue page fetches `GET /catalogue/search-index` fresh on every view (762 products), rather than a one-time import. See [architecture.md §7](architecture.md) for what changed and the tradeoff that came with it. `prisma/seed.ts` still holds 12 placeholder products as a fallback, and `npm run db:import-catalog` remains as an offline snapshot.*
+> On the logged-in user's page, show their real balance from the furniture
+> shop API instead of whatever balance we were tracking in our own database
+> before.
 
-### Should have — makes the demo persuasive
+- **Met.** `GET /users/{user_id}` is called live, on every page load, from `app/layout.tsx` — so the balance shown in the nav bar on *every* logged-in page is the real one, not a stored figure.
+- The old local `budgetCents` field, and everything that computed a "remaining budget" from it, no longer exist in the code at all (see [architecture.md ADR-4](architecture.md), marked superseded).
+- If the balance service is unreachable, the page still renders — a clear message replaces the balance figure rather than a crash. Verified by pointing the app at an unreachable host.
 
-*S2 and S4 built; S1, S3, S5 built in their basic form.*
+### Requirement 2 — Buy places a real order
 
-- **S1.** Remaining budget updates live as items are added, and warns *before* submitting when the order would exceed it.
-- **S2.** Products that cost more than the remaining budget are visibly marked as unaffordable.
-- **S3.** An order detail page showing line items, quantities, and the price paid.
-- **S4.** Search / filter the catalogue by name and category. *Built — plus pagination, which 762 products made necessary.*
-- **S5.** Looks decent on a phone screen as well as a laptop.
+> When a logged-in user clicks "Buy" on a product, place a real order through
+> the furniture shop API for that user and that item. Show them the
+> confirmation and updated balance afterwards.
 
-### Could have — only if time genuinely allows
-- **C1.** Cancel a placed order, which returns its value to the remaining budget.
-- **C2.** Sort catalogue by price.
-- **C3.** A simple spend-by-category summary on the orders page.
-- **C4.** Self-service signup (rather than seeded demo accounts).
+- **Met.** Each product card has one **Buy** button (`components/BuyButton.tsx`). One click calls `buyNow` (`app/actions/orders.ts`), which sends exactly one `POST /orders` for that item, quantity 1, for the account named in requirement 1.
+- On success, the buyer is taken to an order confirmation page showing the items, the total, and — because the shop's own response includes it — the new balance, re-confirmed with a fresh `GET /users/{user_id}`.
+- **Verified for real**, not just read from a spec: one genuine $1.20 order was placed against the real account during development, with the balance confirmed to move from $4,804.00 to $4,802.80 and the confirmation page showing both correctly. There's no sandbox for this — every future click is real too.
 
-### Won't have on Day 1 — explicitly out of scope
-Payments or real checkout · shipping/delivery tracking · stock levels and
-reservations · admin UI for editing products or budgets · multiple
-users/roles/teams sharing a budget · email (verification, receipts, password
-reset) · file uploads for product images (we use image URLs) · multi-currency ·
-audit logging · production-grade rate limiting.
+### Requirement 3 — clear, specific error messages, never a crash
 
-## 4. User stories & acceptance criteria
+> If an order fails because the user doesn't have enough balance, show a
+> clear "insufficient balance" message instead of a generic error. If a
+> product no longer exists, show a friendly "this item is no longer
+> available" message. Don't let either of these crash the page.
 
-> "Given / When / Then" is just a way of writing down *how we'll know it works*.
+- **Met**, and the exact shape of both failures was confirmed by deliberately triggering them against the real account (not guessed from documentation, which only lists a generic `422`):
 
-### US-1 — Log in
-> As a buyer, I want to log in so my budget and orders are mine.
+  | Failure | What the shop's API actually returns | What the buyer sees |
+  | --- | --- | --- |
+  | Insufficient balance | `402 Payment Required`, `{"detail": "Balance X is less than total price Y"}` | "You don't have enough balance for this order." |
+  | Item no longer exists | `404 Not Found`, `{"detail": "No product with item_id '...'"}` | "This item is no longer available." |
+  | Anything else (network blip, an API change, a bug) | any other non-success response | "Something went wrong placing your order. Please try again." — logged server-side, never shown as a raw error |
 
-- Given a seeded account, when I submit the correct email and password, then I land on the catalogue.
-- Given a wrong password, then I stay on the login page and see "Incorrect email or password" (the message must **not** reveal whether the email exists).
-- Given I am logged out, when I visit `/catalogue` or `/orders` directly, then I am redirected to `/login`.
-- When I click Log out, then my session ends and revisiting a protected page redirects me to `/login`.
+- **Crash-safety verified two ways:** a real click on a deliberately-nonexistent item returned the friendly message with no error page; and the catalogue/balance pages were tested against a completely unreachable host, confirming a `200` with a plain-English notice, not a `500`.
+- Since no single product currently costs more than the real balance, the "insufficient balance" *message* was verified at the `lib/cognitivo.ts` level directly (calling the real endpoint with a deliberately huge quantity) rather than through a literal Buy click — the underlying detection is proven; only the specific UI click for *this* exact scenario hasn't happened live, because nothing in the catalogue is currently expensive enough to trigger it that way.
 
-### US-2 — Browse the catalogue
-> As a buyer, I want to see what's available and what it costs.
+## 5. What this replaced
 
-- Then each product shows a name, image, price, and short description.
-- Then prices are formatted as currency (e.g. `$1,299.00`), never as a raw number.
-- Given a product costs more than my remaining budget, then it is marked unaffordable and cannot be added *(S2)*.
+Everything below existed in an earlier version of this app and was
+**deliberately removed**, not merely deprecated, when the owner asked to
+replace the local simulation with the real integration above:
 
-### US-3 — Build an order
-> As a buyer, I want to collect items before committing.
+- A fictional per-buyer budget (`User.budgetCents`), seeded at $50,000 / $12,000.
+- A local shopping cart (`Order` with `status = "DRAFT"`), added-to via "Add to order," with quantity controls.
+- A swappable local budget policy (one-off total vs. monthly allowance), enforced in a database transaction on "Place order."
+- A locally-mirrored `Product` table, kept in sync with the shop's catalogue by import or lazy sync.
 
-- When I add a product, then it appears in my current order with quantity 1.
-- When I add the same product again, then its quantity increases rather than duplicating the line.
-- When I change a quantity to 0 or remove a line, then it leaves the order.
-- Then the order shows a running subtotal.
-- Then my current order survives a page refresh (it lives in the database, not the browser).
+None of it is "still there but unused" — the `Order`, `OrderItem`, and
+`Product` tables were dropped from the database, and the files that
+implemented this (`lib/budget.ts`, `prisma/import-catalog.ts`,
+`components/PlaceOrderButton.tsx`, `app/order/page.tsx`) were deleted.
+[architecture.md §3](architecture.md) shows what remains: `User` and
+`Session`, nothing else.
 
-### US-4 — See my budget at all times
-> As a buyer, I want to know what I have left before I commit.
+## 6. Still true from the original build
 
-- Then total budget, spent, and remaining are visible on every logged-in page.
-- Then `remaining = allocation − spent within the current budget period` (see business rule 3).
-- Then the period is labelled, so it's unambiguous what the figures cover (e.g. "All time" or "July 2026").
-- Given the current order's subtotal exceeds my remaining budget, then I see a clear warning and the Place Order button is disabled *(S1)*.
+- **M1/M2 — login and route protection.** Unchanged: email + password, HttpOnly session cookie, every page but `/login` redirects when logged out.
+- **Catalogue browsing** — name, price, category, description built from dimensions/colours, search, category filter, pagination. Now live from the shop's API rather than a local copy (this was itself a prior revision — see the git history / earlier drafts of this file if curious).
+- **Order history** — a list of past orders and a detail page per order. Now reading real history from `GET /orders/{user_id}` instead of local rows.
+- **Responsive layout, currency formatting, integer-cents arithmetic** — unaffected by this revision.
 
-### US-5 — Place an order
-> As a buyer, I want to commit my order and have the budget respected.
+## 7. Non-functional requirements
 
-- Given the order total is within remaining budget, when I place it, then it becomes a placed order, my remaining budget decreases by exactly the order total, and my current order is emptied.
-- Given the order total exceeds remaining budget, when I place it, then it is **rejected by the server** with a clear message and nothing is saved.
-- Given I double-click Place Order or submit the same order twice, then **only one** order is created and the budget is decremented once.
-- Given my order is empty, then I cannot place it.
+- **Demo-ready:** runs with two commands on a laptop.
+- **Fast where it can be:** login and navigation stay fast; the catalogue, balance, and order pages are only as fast as the shop's API is at that moment — measured anywhere from well under a second to a few seconds. Not something this app controls.
+- **Honest security basics:** passwords hashed, session cookie HttpOnly, no secrets committed to git. Not a claim of production-grade security.
+- **Resettable — for login only.** `npm run db:reset` restores clean demo logins in seconds. It cannot and does not reset anything real; there is no undo for a real order.
+- **Understandable:** no coding background on the owner's side, so file names, structure, and this document stay in plain English.
 
-### US-6 — Review past orders
-> As a buyer, I want to see what I've already committed.
-
-- Then I see my placed orders, newest first, each with a date, item count, and total.
-- Then the sum of those totals equals my "spent so far" figure.
-- Then I only ever see my own orders, never another user's.
-
-## 5. Business rules
-
-These are the rules the code must enforce, gathered in one place:
-
-1. **Money is stored in whole minor units** (cents), never as a decimal. Displayed as currency only at the last moment.
-2. **A buyer has exactly one budget allocation**, assigned at seed time.
-3. **Spent = the sum of PLACED orders that fall inside the current budget period.** A draft/current order does *not* consume budget. What counts as "the current period" is decided by the active budget policy — all time (one-off total) or the current calendar month (monthly allowance). See [architecture.md ADR-4](architecture.md).
-4. **A buyer has at most one draft order** at a time — that draft *is* the shopping cart.
-5. **Budget is enforced on the server**, inside a single database transaction, at the moment of placing. Client-side warnings are a convenience, never the guard.
-6. **Line items record the price at the time of ordering.** If a product's price changes later, past orders must not change.
-7. **A buyer can only ever read or modify their own orders.**
-
-## 6. Non-functional requirements
-
-- **Demo-ready:** runs with two commands on a laptop, no cloud accounts required.
-- **Fast enough:** any page in under ~1 second locally. No performance work beyond that. *Exception: the catalogue page, which now depends on the shop's live API (architecture.md §7) — its speed is theirs to control, measured anywhere from 0.6s to 3.0s at different times. Every other page is unaffected and still meets the ~1s bar.*
-- **Honest security basics:** passwords hashed (never stored in plain text), session cookie is HttpOnly, no secrets committed to git. We are *not* claiming production-grade security.
-- **Resettable:** one command reseeds the database to a clean demo state — essential when practising the demo.
-- **Understandable:** the person who owns this app has no coding background, so file names and structure must be self-explanatory.
-
-## 7. Decisions & open questions
+## 8. Decisions & open questions
 
 ### Decided
 
 | # | Question | Decision (2026-07-29) |
 | --- | --- | --- |
-| Q1 | Is the budget a **one-off total** or a **recurring monthly allowance**? | **Neither is hard-coded.** The budget rule is built as a swappable module (see [architecture.md ADR-4](architecture.md)), shipping with *one-off total* active because it demos most clearly. Switching to monthly is a one-line change. |
-| Q2 | Does the demo need a **public URL**, or is a laptop enough? | **Laptop only.** SQLite confirmed as the database; no cloud accounts needed. The Postgres escape hatch in [architecture.md §6](architecture.md) stays documented but unused. |
+| Q1 | Should the real integration replace the local budget demo, or sit alongside it? | **Replace it.** The local simulation was removed entirely — see §5. |
+| Q2 | Which shop account should logged-in buyers act as? | **`cognitivo020`, the only account this API key can see.** Both demo logins act on it. |
+| Q3 | Permission to test the real "insufficient balance" / "item not found" paths against the real account? | **Yes** — two deliberately-failing requests were sent (a wildly over-quantity order, a nonexistent item id), confirmed to leave the real balance untouched, and one genuine $1.20 order was placed to verify the success path. |
+| Q4 | Does the demo need a public URL? | **Laptop only** — unaffected by this revision. |
 
 ### Still open
 
 | # | Question | Working default |
 | --- | --- | --- |
-| Q3 | What **currency**? | Displayed as **USD**, but the imported data is from IKEA Saudi Arabia, so the real figures are most likely **SAR**. The arithmetic is exact either way; only the `$` symbol is in doubt. One-line fix in `lib/money.ts`. **Worth a decision before judging.** |
-| Q4 | Should a buyer be able to **cancel** an order and reclaim budget? | No on Day 1 *(C1)* |
-| Q5 | Do judges expect **self-service signup**, or are seeded demo logins fine? | Seeded logins |
+| Q5 | Should any product cost enough to genuinely exercise "insufficient balance" through a real Buy click, for demo purposes? | Not currently — every item is affordable against the $4,800-ish real balance. Worth deciding before a demo that wants to show this path live rather than described. |
+| Q6 | What happens as the real balance runs low over repeated real testing? | No plan yet — it only goes down, never resets. Worth a decision before extensive rehearsal. |

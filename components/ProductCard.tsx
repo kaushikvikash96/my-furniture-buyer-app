@@ -1,26 +1,24 @@
 import type { DisplayProduct } from "@/lib/cognitivo";
-import { addToOrder } from "@/app/actions/orders";
+import { BuyButton } from "./BuyButton";
 import { Money } from "./Money";
 
 /**
- * One product in the catalogue grid, fetched live from the shop's API
- * (app/catalogue/page.tsx) — `product.sourceId` is the shop's own item id,
- * not a row in our database. See app/actions/orders.ts for how "Add to
- * order" turns that into a local Product the first time it's used.
+ * One product in the catalogue grid, fetched live from the shop's API. Buy
+ * places a REAL order for this exact item — see architecture.md §7.
  *
  * Most of these have no photo — the live endpoint doesn't return one — so
- * the image is only rendered when we actually have one (merged in from an
- * earlier `npm run db:import-catalog`, if any). Otherwise it's just the
- * gradient tile, not a broken-image icon.
+ * the image is only rendered when we actually have one (a leftover local
+ * file from an earlier import, if any). Otherwise it's just the gradient
+ * tile, not a broken-image icon.
  */
 export function ProductCard({
   product,
-  remainingCents,
+  remainingBalanceCents,
 }: {
   product: DisplayProduct;
-  remainingCents: number;
+  remainingBalanceCents: number;
 }) {
-  const affordable = product.priceCents <= remainingCents;
+  const affordable = product.priceCents <= remainingBalanceCents;
 
   return (
     <article className="flex flex-col overflow-hidden rounded-lg border border-stone-200 bg-white shadow-sm">
@@ -62,22 +60,14 @@ export function ProductCard({
           />
 
           {affordable ? (
-            <form action={addToOrder}>
-              <input type="hidden" name="sourceId" value={product.sourceId} />
-              <button
-                type="submit"
-                className="rounded bg-stone-900 px-3 py-2 text-sm font-medium text-white hover:bg-stone-700"
-              >
-                Add to order
-              </button>
-            </form>
+            <BuyButton sourceId={product.sourceId} />
           ) : (
-            // Requirement S2 — over remaining budget, so it can't be added.
+            // Requirement S2 — over remaining balance, so it can't be bought.
             <span
               className="rounded bg-stone-100 px-3 py-2 text-sm text-stone-500"
-              title="This costs more than your remaining budget"
+              title="This costs more than your remaining balance"
             >
-              Over budget
+              Insufficient balance
             </span>
           )}
         </div>

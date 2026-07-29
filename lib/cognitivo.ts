@@ -156,3 +156,132 @@ export function toDisplayProduct(item: CatalogItem, imageUrl = ""): DisplayProdu
     sourceUrl: item.link ?? null,
   };
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// Real balance and real orders — GET /users/{id}, POST /orders, GET /orders/{id}
+//
+// Everything below is a genuine, mutating (for placeOrder) integration with a
+// REAL account: day1.training.cognitivo.com.au/users/cognitivo020, real money,
+// no undo. See architecture.md §7 for the decision to replace the local
+// budget/cart simulation with this.
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** The one real account this app acts as — see architecture.md §7. */
+export function cognitivoUserId(): string {
+  const userId = process.env.COGNITIVO_USER_ID;
+  if (!userId) {
+    throw new Error("COGNITIVO_USER_ID must be set. Copy .env.example to .env and fill it in.");
+  }
+  return userId;
+}
+
+export type RealBalance = { userId: string; name: string; balanceCents: number };
+
+/** GET /users/{user_id} — your current real balance, derived server-side from a ledger. */
+export async function fetchUserBalance(userId: string): Promise<RealBalance> {
+  const { baseUrl, apiKey } = credentials();
+  const res = await fetch(`${baseUrl}/users/${encodeURIComponent(userId)}`, {
+    headers: { "X-Api-Key": apiKey },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`GET /users/${userId} failed: ${res.status} ${await res.text()}`);
+  }
+  const data: { user_id: string; name: string; balance: number } = await res.json();
+  return { userId: data.user_id, name: data.name, balanceCents: toCents(data.balance) };
+}
+
+/** Thrown by placeRealOrder when the account can't afford the order (HTTP 402). */
+export class InsufficientBalanceError extends Error {}
+/** Thrown by placeRealOrder when the item doesn't exist (HTTP 404). */
+export class ProductNotFoundError extends Error {}
+
+export type PlacedOrder = { orderId: string; totalCents: number; remainingBalanceCents: number };
+
+/**
+ * POST /orders — places a REAL order against the shop's system. Not a
+ * simulation: on success this genuinely spends the account's real balance,
+ * permanently. See app/actions/orders.ts for the one place this is called.
+ */
+export async function placeRealOrder(
+  userId: string,
+  itemId: string,
+  quantity: number,
+): Promise<PlacedOrder> {
+  const { baseUrl, apiKey } = credentials();
+  const res = await fetch(`${baseUrl}/orders`, {
+    method: "POST",
+    headers: { "X-Api-Key": apiKey, "Content-Type": "application/json" },
+    cache: "no-store",
+    body: JSON.stringify({ user_id: userId, items: [{ item_id: itemId, quantity }] }),
+  });
+
+  if (res.status === 402) {
+    const body: { detail?: string } = await res.json().catch(() => ({}));
+    throw new InsufficientBalanceError(body.detail ?? "Insufficient balance.");
+  }
+  if (res.status === 404) {
+    const body: { detail?: string } = await res.json().catch(() => ({}));
+    throw new ProductNotFoundError(body.detail ?? "Item not found.");
+  }
+  if (!res.ok) {
+    throw new Error(`POST /orders failed: ${res.status} ${await res.text()}`);
+  }
+
+  const data: { order_id: string; total_price: number; remaining_balance: number } =
+    await res.json();
+  return {
+    orderId: data.order_id,
+    totalCents: toCents(data.total_price),
+    remainingBalanceCents: toCents(data.remaining_balance),
+  };
+}
+
+export type RealOrderLine = {
+  // The order-history schema calls this `product_id`; the catalogue schema
+  // calls the same kind of value `item_id`. Same id space, different name —
+  // an inconsistency in the shop's own API, not a mistake here.
+  productId: string;
+  productName: string | null;
+  quantity: number;
+  unitPriceCents: number;
+};
+
+export type RealOrder = {
+  orderId: string;
+  totalCents: number;
+  placedAt: string | null;
+  items: RealOrderLine[];
+};
+
+/** GET /orders/{user_id} — this account's real order history, newest first. */
+export async function fetchOrderHistory(userId: string): Promise<RealOrder[]> {
+  const { baseUrl, apiKey } = credentials();
+  const res = await fetch(`${baseUrl}/orders/${encodeURIComponent(userId)}`, {
+    headers: { "X-Api-Key": apiKey },
+    cache: "no-store",
+  });
+  if (!res.ok) {
+    throw new Error(`GET /orders/${userId} failed: ${res.status} ${await res.text()}`);
+  }
+  const data: Array<{
+    order_id: string;
+    total_amount: number;
+    timestamp: string | null;
+    items: Array<{ product_id: string; product_name: string | null; quantity: number; unit_price: number }>;
+  }> = await res.json();
+
+  return data
+    .map((order) => ({
+      orderId: order.order_id,
+      totalCents: toCents(order.total_amount),
+      placedAt: order.timestamp,
+      items: order.items.map((item) => ({
+        productId: item.product_id,
+        productName: item.product_name,
+        quantity: item.quantity,
+        unitPriceCents: toCents(item.unit_price),
+      })),
+    }))
+    .sort((a, b) => (b.placedAt ?? "").localeCompare(a.placedAt ?? ""));
+}

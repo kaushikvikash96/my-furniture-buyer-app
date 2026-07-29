@@ -1,11 +1,29 @@
+import { readdir } from "node:fs/promises";
+import path from "node:path";
 import Link from "next/link";
 import { ProductCard } from "@/components/ProductCard";
-import { fetchAllProducts, toDisplayProduct, type DisplayProduct } from "@/lib/cognitivo";
-import { getBudgetSummary } from "@/lib/budget";
-import { db } from "@/lib/db";
+import {
+  cognitivoUserId,
+  fetchAllProducts,
+  fetchUserBalance,
+  toDisplayProduct,
+  type DisplayProduct,
+} from "@/lib/cognitivo";
 import { requireUser } from "@/lib/session";
 
 const PAGE_SIZE = 24;
+const IMAGE_DIR = path.join(process.cwd(), "public", "products");
+
+/** Product photos left over from an earlier version of this app (the live
+ * catalogue API never returns one). One directory read, not 762 file checks. */
+async function localImageBySourceId(): Promise<Map<string, string>> {
+  try {
+    const files = await readdir(IMAGE_DIR);
+    return new Map(files.map((f) => [path.parse(f).name, `/products/${f}`]));
+  } catch {
+    return new Map(); // no leftover photos — fine, cards just show the gradient tile
+  }
+}
 
 /**
  * The home page: the furniture catalogue (requirements M3, M8).
@@ -13,21 +31,18 @@ const PAGE_SIZE = 24;
  * Fetches LIVE from the shop's catalogue API on every view — see
  * lib/cognitivo.ts and architecture.md §7. There is no local caching; every
  * request is a fresh call to GET /catalogue/search-index. The search-index
- * endpoint has no free-text search or a stable sort order it guarantees
- * beyond "same result each call" in practice, so search/category/pagination
- * are all done here, in memory, against the fetched list.
+ * endpoint has no free-text search, so search/category/pagination are all
+ * done here, in memory, against the fetched list.
  *
  * If the shop's API is unreachable, this page shows a clear error instead of
- * crashing — that's the real cost of "live": the catalogue now depends on
- * their server being up, which the earlier one-way-import design deliberately
- * avoided. See architecture.md §7 for that tradeoff written out in full.
+ * crashing (requirement 3).
  */
 export default async function CataloguePage({
   searchParams,
 }: {
   searchParams: Promise<{ q?: string; category?: string; page?: string }>;
 }) {
-  const user = await requireUser(); // the route guard (M2)
+  await requireUser(); // the route guard (M2)
   const { q, category, page } = await searchParams;
 
   const search = (q ?? "").trim().toLowerCase();
@@ -38,27 +53,24 @@ export default async function CataloguePage({
   let fetchError: string | null = null;
 
   try {
-    const items = await fetchAllProducts();
+    const [items, images] = await Promise.all([fetchAllProducts(), localImageBySourceId()]);
     fetchedAt = new Date();
-
-    // Live items have no image (search-index never returns one). Photos
-    // saved by an earlier `npm run db:import-catalog` are still on disk and
-    // still keyed by the same sourceId, so merge them in for display —
-    // read-only, nothing is written back here.
-    const localImages = await db.product.findMany({
-      where: { sourceId: { in: items.map((i) => i.item_id) }, NOT: { imageUrl: "" } },
-      select: { sourceId: true, imageUrl: true },
-    });
-    const imageBySourceId = new Map(localImages.map((p) => [p.sourceId, p.imageUrl]));
-
-    allProducts = items.map((item) =>
-      toDisplayProduct(item, imageBySourceId.get(item.item_id) ?? ""),
-    );
+    allProducts = items.map((item) => toDisplayProduct(item, images.get(item.item_id) ?? ""));
   } catch (error) {
     fetchError =
       error instanceof Error ? error.message : "The catalogue service didn't respond.";
     allProducts = [];
     fetchedAt = new Date();
+  }
+
+  let remainingBalanceCents = 0;
+  let balanceError: string | null = null;
+  try {
+    const balance = await fetchUserBalance(cognitivoUserId());
+    remainingBalanceCents = balance.balanceCents;
+  } catch (error) {
+    balanceError =
+      error instanceof Error ? error.message : "The balance service didn't respond.";
   }
 
   const categoryCounts = new Map<string, number>();
@@ -79,8 +91,6 @@ export default async function CataloguePage({
     (currentPage - 1) * PAGE_SIZE,
     (currentPage - 1) * PAGE_SIZE + PAGE_SIZE,
   );
-
-  const budget = await getBudgetSummary(user.id);
 
   /** Build a link that keeps the other filters intact. */
   function linkTo(next: { category?: string | null; page?: number }) {
@@ -104,7 +114,10 @@ export default async function CataloguePage({
             {search || category ? " matching" : ""} product
             {matchCount === 1 ? "" : "s"}
           </p>
-          <p className="text-xs text-stone-400" title="Fetched fresh from the shop's catalogue API on this page load — no caching">
+          <p
+            className="text-xs text-stone-400"
+            title="Fetched fresh from the shop's catalogue API on this page load — no caching"
+          >
             live · fetched {fetchedAt.toLocaleTimeString("en-US")}
           </p>
         </div>
@@ -117,6 +130,15 @@ export default async function CataloguePage({
         >
           The shop&apos;s catalogue service isn&apos;t responding right now
           ({fetchError}). Try refreshing in a moment.
+        </p>
+      )}
+      {balanceError && (
+        <p
+          role="alert"
+          className="mt-4 rounded border border-red-200 bg-red-50 p-4 text-sm text-red-800"
+        >
+          Couldn&apos;t check your real balance ({balanceError}) — affordability
+          below may be wrong. Try refreshing.
         </p>
       )}
 
@@ -185,7 +207,7 @@ export default async function CataloguePage({
               <ProductCard
                 key={product.sourceId}
                 product={product}
-                remainingCents={budget.remainingCents}
+                remainingBalanceCents={remainingBalanceCents}
               />
             ))}
           </div>

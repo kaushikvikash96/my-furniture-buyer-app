@@ -2,160 +2,50 @@
 
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
-import { db } from "@/lib/db";
-import { getBudgetSummary } from "@/lib/budget";
-import { fetchProductById, toDisplayProduct } from "@/lib/cognitivo";
-import { formatCents } from "@/lib/money";
+import {
+  cognitivoUserId,
+  InsufficientBalanceError,
+  placeRealOrder,
+  ProductNotFoundError,
+} from "@/lib/cognitivo";
 import { requireUser } from "@/lib/session";
 
-/** A rule the buyer broke (over budget, empty order) — not a bug. */
-class OrderProblem extends Error {}
-
-/** The cart is just an Order with status DRAFT — architecture.md §3. */
-async function getOrCreateDraft(userId: string) {
-  const existing = await db.order.findFirst({
-    where: { userId, status: "DRAFT" },
-  });
-  return existing ?? db.order.create({ data: { userId, status: "DRAFT" } });
-}
-
-function refreshPages() {
-  revalidatePath("/catalogue");
-  revalidatePath("/order");
-  revalidatePath("/orders");
-}
+export type BuyState = { error?: string };
 
 /**
- * The catalogue page now shows live items from the shop's API, identified by
- * their own `sourceId` — not a row in our database yet. The first time a
- * given item is added, we sync it into our local Product table (so the
- * order/budget logic downstream — which needs a real foreign key — never has
- * to change); every later add just reuses that row. See architecture.md §7.
- */
-export async function addToOrder(formData: FormData): Promise<void> {
-  const user = await requireUser();
-  const sourceId = String(formData.get("sourceId") ?? "");
-  if (!sourceId) return;
-
-  let product = await db.product.findFirst({ where: { sourceId } });
-
-  if (!product) {
-    let item;
-    try {
-      item = await fetchProductById(sourceId);
-    } catch {
-      return; // shop's API unreachable right now — nothing safe to add
-    }
-    if (!item) return; // no longer in the shop's catalogue
-
-    const { sourceId: _ignore, ...fields } = toDisplayProduct(item);
-    product = await db.product.create({ data: { ...fields, sourceId } });
-  }
-
-  const draft = await getOrCreateDraft(user.id);
-
-  await db.orderItem.upsert({
-    where: { orderId_productId: { orderId: draft.id, productId: product.id } },
-    // unitPriceCents is copied NOW, so re-pricing later can't rewrite history.
-    create: {
-      orderId: draft.id,
-      productId: product.id,
-      quantity: 1,
-      unitPriceCents: product.priceCents,
-    },
-    update: { quantity: { increment: 1 } },
-  });
-
-  refreshPages();
-}
-
-export async function changeQuantity(formData: FormData): Promise<void> {
-  const user = await requireUser();
-  const itemId = String(formData.get("itemId") ?? "");
-  const delta = Number(formData.get("delta") ?? 0);
-
-  // Scoped through the order to this user — nobody can touch someone else's line.
-  const item = await db.orderItem.findFirst({
-    where: { id: itemId, order: { userId: user.id, status: "DRAFT" } },
-  });
-  if (!item) return;
-
-  const quantity = item.quantity + delta;
-  if (quantity < 1) {
-    await db.orderItem.delete({ where: { id: item.id } });
-  } else {
-    await db.orderItem.update({ where: { id: item.id }, data: { quantity } });
-  }
-
-  refreshPages();
-}
-
-export async function removeItem(formData: FormData): Promise<void> {
-  const user = await requireUser();
-  const itemId = String(formData.get("itemId") ?? "");
-
-  await db.orderItem.deleteMany({
-    where: { id: itemId, order: { userId: user.id, status: "DRAFT" } },
-  });
-
-  refreshPages();
-}
-
-export type PlaceOrderState = { error?: string };
-
-/**
- * Placing an order — the one genuinely tricky bit (architecture.md §4).
+ * Places a REAL order through the furniture shop's API. Not a simulation —
+ * on success this genuinely spends the account's real balance, permanently.
+ * See architecture.md §7 for why there's no local cart or budget check here
+ * anymore: the shop's own system is now the one source of truth for both.
  *
- * The budget check and the write happen inside ONE transaction. If they were
- * separate steps, a double-clicked button could slip two orders through: each
- * passes the check, together they bust the budget.
+ * Our own login still gates this (requireUser) — but every logged-in buyer
+ * acts as the same one real account (COGNITIVO_USER_ID), because that's the
+ * only account this API key has.
  */
-export async function placeOrder(
-  _previous: PlaceOrderState,
-  _formData: FormData,
-): Promise<PlaceOrderState> {
-  const user = await requireUser();
-  let placedOrderId: string;
+export async function buyNow(_previous: BuyState, formData: FormData): Promise<BuyState> {
+  await requireUser();
+  const sourceId = String(formData.get("sourceId") ?? "");
+  if (!sourceId) return { error: "Something went wrong. Please try again." };
 
+  let orderId: string;
   try {
-    placedOrderId = await db.$transaction(async (tx) => {
-      const draft = await tx.order.findFirst({
-        where: { userId: user.id, status: "DRAFT" },
-        include: { items: true },
-      });
-
-      if (!draft || draft.items.length === 0) {
-        throw new OrderProblem("Your order is empty.");
-      }
-
-      // Recomputed from the database — a total sent by the browser is never trusted.
-      const totalCents = draft.items.reduce(
-        (sum, item) => sum + item.quantity * item.unitPriceCents,
-        0,
-      );
-
-      const { remainingCents } = await getBudgetSummary(user.id, tx);
-
-      if (totalCents > remainingCents) {
-        const over = formatCents(totalCents - remainingCents);
-        throw new OrderProblem(
-          `That order is ${over} over your remaining budget. Remove something and try again.`,
-        );
-      }
-
-      await tx.order.update({
-        where: { id: draft.id },
-        data: { status: "PLACED", totalCents, placedAt: new Date() },
-      });
-
-      return draft.id;
-    });
+    const result = await placeRealOrder(cognitivoUserId(), sourceId, 1);
+    orderId = result.orderId;
   } catch (error) {
-    if (error instanceof OrderProblem) return { error: error.message };
-    throw error; // a real bug — let it surface rather than hiding it
+    // Two specific, expected failures get a clear message each; anything
+    // else (network blip, an API change, a bug) gets a generic one — never
+    // a crash. See requirement 3.
+    if (error instanceof InsufficientBalanceError) {
+      return { error: "You don't have enough balance for this order." };
+    }
+    if (error instanceof ProductNotFoundError) {
+      return { error: "This item is no longer available." };
+    }
+    console.error("buyNow failed:", error);
+    return { error: "Something went wrong placing your order. Please try again." };
   }
 
-  revalidatePath("/", "layout"); // budget bar lives in the layout
-  refreshPages();
-  redirect(`/orders/${placedOrderId}?placed=1`);
+  revalidatePath("/", "layout"); // the real balance shown in the nav
+  revalidatePath("/orders");
+  redirect(`/orders/${orderId}?placed=1`);
 }
